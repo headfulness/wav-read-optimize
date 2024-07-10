@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'bytes_reader.dart';
@@ -65,7 +66,7 @@ class Wav {
   static const _kStrData = 'data';
   static const _kStrFact = 'fact';
 
-  static WavFormat _getFormat(int formatCode, int bitsPerSample) {
+  static WavFormat getFormat(int formatCode, int bitsPerSample) {
     if (formatCode == _kPCM) {
       if (bitsPerSample == 8) return WavFormat.pcm8bit;
       if (bitsPerSample == 16) return WavFormat.pcm16bit;
@@ -105,7 +106,7 @@ class Wav {
     for (int i = 0; i < numChannels; ++i) {
       channels.add(Float64List(numSamples));
     }
-    final format = _getFormat(formatCode, bitsPerSample);
+    final format = getFormat(formatCode, bitsPerSample);
 
     // Read samples.
     final readSample = byteReader.getSampleReader(format);
@@ -115,6 +116,108 @@ class Wav {
       }
     }
     return Wav(channels, samplesPerSecond, format);
+  }
+
+  static List<Float64List> ClipAndFadeFile(
+    Uint8List bytes,
+    Duration totalDuration,
+    bool shouldFadein,
+  ) {
+    // Utils for reading.
+    var byteReader = BytesReader(bytes)
+      ..assertString(_kStrRiff)
+      ..readUint32() // File size.
+      ..assertString(_kStrWave)
+      ..findChunk(_kStrFmt);
+    final fmtSize = roundUpToEven(byteReader.readUint32());
+    final formatCode = byteReader.readUint16();
+    final numChannels = byteReader.readUint16();
+    final samplesPerSecond = byteReader.readUint32();
+    byteReader.readUint32(); // Bytes per second.
+    final bytesPerSampleAllChannels = byteReader.readUint16();
+    final bitsPerSample = byteReader.readUint16();
+    if (fmtSize > _kFormatSize) byteReader.skip(fmtSize - _kFormatSize);
+
+    byteReader.findChunk(_kStrData);
+    final dataSize = byteReader.readUint32();
+    final numSamples =
+        (samplesPerSecond * (totalDuration.inMilliseconds / 1000)).toInt();
+    final channels = <Float64List>[];
+    for (int i = 0; i < numChannels; ++i) {
+      channels.add(Float64List(numSamples));
+    }
+    final format = getFormat(formatCode, bitsPerSample);
+
+    // final endSample =
+    //     (samplesPerSecond * (totalDuration.inMilliseconds / 1000)).toInt();
+
+    final completeFadeInAtSample = samplesPerSecond;
+    final startFadeOutAtSample = numSamples - samplesPerSecond;
+
+    // Read samples.
+    final readSample = byteReader.getSampleReader(format);
+
+    // write the fade in samples
+    if (shouldFadein) {
+      for (int i = 0; i < completeFadeInAtSample; ++i) {
+        var fadeInput = i / samplesPerSecond;
+        var currentVolume = fadeInVolumeValue(fadeInput);
+        for (int j = 0; j < numChannels; ++j) {
+          channels[j][i] = readSample() * currentVolume;
+        }
+      }
+      // write full volume samples
+      for (int i = completeFadeInAtSample; i < startFadeOutAtSample; ++i) {
+        for (int j = 0; j < numChannels; ++j) {
+          channels[j][i] = readSample();
+        }
+      }
+    } else {
+      // write full volume samples
+      for (int i = 0; i < startFadeOutAtSample; ++i) {
+        for (int j = 0; j < numChannels; ++j) {
+          channels[j][i] = readSample();
+        }
+      }
+    }
+
+    // write the fade out samples
+    for (int i = startFadeOutAtSample; i < numSamples; ++i) {
+      var fadeInput = 1 - ((numSamples - i) / samplesPerSecond);
+      var currentVolume = fadeOutVolumeValue(fadeInput);
+      for (int j = 0; j < numChannels; ++j) {
+        channels[j][i] = readSample() * currentVolume;
+      }
+    }
+
+    return channels;
+  }
+
+  static double fadeOutVolumeValue(double x) {
+    // Fitted curve from these points:
+    // X            Y
+    // 0	          0.980128683280799
+    // 0.2183807779	0.967222212356384
+    // 0.3649012793	0.85862955830739
+    // 0.4705323385	0.67051146592498
+    // 0.5659410371	0.46381273005792
+    // 0.666460916	0.278229342107702
+    // 0.9850578203	0.0209026939748106
+    return -0.05498073 + (1.03510943 / (1 + pow(x / 0.5665321, 4.586192)));
+  }
+
+  static double fadeInVolumeValue(double x) {
+    // Fitted curve from these points:
+    // X             Y
+    // 0             0
+    // 0.03121488092 0.05633801222
+    // 0.3407816624	 0.2957746387
+    // 0.4635409034	 0.5211267471
+    // 0.5667298305	 0.7605633736
+    // 0.6521275633	 0.8873239756
+    // 0.8015735958	 0.9718309641
+    // 1             1
+    return 1.060212 + (-1.0284293 / (1 + pow((x / 0.4578035), 4.049853)));
   }
 
   /// Mix the audio channels down to mono.
