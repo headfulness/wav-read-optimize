@@ -37,11 +37,7 @@ class Wav {
   final WavFormat format;
 
   /// Constructs a Wav directly from audio data.
-  Wav(
-    this.channels,
-    this.samplesPerSecond, [
-    this.format = WavFormat.pcm16bit,
-  ]);
+  Wav(this.channels, this.samplesPerSecond, [this.format = WavFormat.pcm16bit]);
 
   /// Read a Wav from a file.
   ///
@@ -148,11 +144,18 @@ class Wav {
     }
     final format = getFormat(formatCode, bitsPerSample);
 
-    // final endSample =
-    //     (samplesPerSecond * (totalDuration.inMilliseconds / 1000)).toInt();
-
-    final completeFadeInAtSample = samplesPerSecond;
-    final startFadeOutAtSample = numSamples - samplesPerSecond;
+    var completeFadeInAtSample = samplesPerSecond;
+    final halfDurationInSamples = (numSamples / 2).toInt();
+    if (totalDuration.inMilliseconds < 2000 && shouldFadein) {
+      // adjust fade in and out for short clips
+      completeFadeInAtSample = halfDurationInSamples - 1;
+    }
+    var startFadeOutAtSample = numSamples - samplesPerSecond;
+    if (totalDuration.inMilliseconds < 2000) {
+      // adjust fade out for short clips
+      startFadeOutAtSample = halfDurationInSamples + 1;
+    }
+    final fadeOutDurationInSamples = numSamples - startFadeOutAtSample;
 
     // Read samples.
     final readSample = byteReader.getSampleReader(format);
@@ -160,7 +163,7 @@ class Wav {
     // write the fade in samples
     if (shouldFadein) {
       for (int i = 0; i < completeFadeInAtSample; ++i) {
-        var fadeInput = i / samplesPerSecond;
+        var fadeInput = i / completeFadeInAtSample;
         var currentVolume = fadeInVolumeValue(fadeInput);
         for (int j = 0; j < numChannels; ++j) {
           channels[j][i] = readSample() * currentVolume;
@@ -183,7 +186,7 @@ class Wav {
 
     // write the fade out samples
     for (int i = startFadeOutAtSample; i < numSamples; ++i) {
-      var fadeInput = 1 - ((numSamples - i) / samplesPerSecond);
+      var fadeInput = 1 - ((numSamples - i) / fadeOutDurationInSamples);
       var currentVolume = fadeOutVolumeValue(fadeInput);
       for (int j = 0; j < numChannels; ++j) {
         channels[j][i] = readSample() * currentVolume;
